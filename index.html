@@ -2,34 +2,323 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <title>House Engine v1 – Module Version</title>
+  <title>Fensterblick Arch – Prototyp</title>
   <style>
-    body { margin: 0; overflow: hidden; background: #000; }
-    #ui {
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+    #hud {
       position: absolute;
       top: 10px; left: 10px;
       padding: 8px 12px;
-      background: rgba(0,0,0,0.45);
-      color: white;
-      font-family: sans-serif;
-      border-radius: 6px;
+      background: rgba(0,0,0,0.6);
+      color: #f5f5f5;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      border-radius: 8px;
+      pointer-events: none;
+      line-height: 1.4;
     }
   </style>
 </head>
-
 <body>
-
-<div id="ui">House Engine v1 – Tür: Klick zum Öffnen</div>
+<div id="hud">
+  <b>Fensterblick Arch – v0.2</b><br/>
+  W/A/S/D: Fenster verschieben · Q/E: drehen<br/>
+  H: Frustum-Hilfe an/aus · 1 Einheit = 1 Meter
+</div>
 
 <script type="module">
-  import * as THREE from "./libs/ThreeModule.js";
-  import { OrbitControls } from "./libs/OrbitControls.js";
-  import { buildHouse } from "./js/house.js";
-  import { setupInteraction } from "./js/interaction.js";
-  import { startEngine } from "./js/main.js";
+  import * as THREE from './libs/three.module.js';
+  import { OrbitControls } from './libs/OrbitControls.js';
 
-  startEngine(THREE, OrbitControls, buildHouse, setupInteraction);
+  // ----------------------
+  // Physik / Geometrie
+  // ----------------------
+  const SCREEN_W_CM  = 40;   // Fensterbreite ~40 cm
+  const SCREEN_H_CM  = 80;   // Fensterhöhe ~80 cm
+  const EYE_DIST_CM  = 40;   // Augenabstand ~40 cm
+  const EYE_HEIGHT_M = 1.6;  // Augenhöhe über Boden ~1.6 m
+
+  const fovRad = 2 * Math.atan((SCREEN_H_CM / 2) / EYE_DIST_CM);
+  const FOV_DEG = THREE.MathUtils.radToDeg(fovRad);
+
+  // ----------------------
+  // Grund-Setup
+  // ----------------------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xb0c4d8);
+
+  const camera = new THREE.PerspectiveCamera(
+    FOV_DEG,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1500
+  );
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  const orbit = new OrbitControls(camera, renderer.domElement);
+  orbit.enabled = false; // nur bei Bedarf einschalten
+
+  // Licht
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x557755, 0.7);
+  scene.add(hemi);
+
+  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+  sun.position.set(100, 200, 80);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  scene.add(sun);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+  scene.add(ambient);
+
+  // ----------------------
+  // Welt: dein Vorplatz, Straße, Feld, Häuser, Jura
+  // Koordinaten:
+  //   X: Ost (+) / West (–)
+  //   Z: Norden (–) / Süden (+) – Blickrichtung: -Z
+  //   Y: Höhe
+  // 1 Einheit = 1 Meter
+  // ----------------------
+  const world = new THREE.Group();
+  scene.add(world);
+
+  // Hof / Vorgarten (Beton + Grün)
+  const yardGeo = new THREE.PlaneGeometry(20, 10);
+  const yardMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
+  const yard = new THREE.Mesh(yardGeo, yardMat);
+  yard.rotation.x = -Math.PI / 2;
+  yard.position.set(0, 0.001, 4); // ein paar Meter vor dem Haus
+  yard.receiveShadow = true;
+  world.add(yard);
+
+  const gardenGeo = new THREE.PlaneGeometry(20, 8);
+  const gardenMat = new THREE.MeshStandardMaterial({ color: 0x5f8f4f });
+  const garden = new THREE.Mesh(gardenGeo, gardenMat);
+  garden.rotation.x = -Math.PI / 2;
+  garden.position.set(0, 0.002, 8.5);
+  garden.receiveShadow = true;
+  world.add(garden);
+
+  // Straße direkt vor dem Grundstück
+  const roadGeo = new THREE.PlaneGeometry(30, 6);
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+  const road = new THREE.Mesh(roadGeo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(0, 0.003, 0);
+  road.receiveShadow = true;
+  world.add(road);
+
+  // Feld gegenüber (bis ~160–170m)
+  const fieldGeo = new THREE.PlaneGeometry(80, 180);
+  const fieldMat = new THREE.MeshStandardMaterial({ color: 0x6ca15a });
+  const field = new THREE.Mesh(fieldGeo, fieldMat);
+  field.rotation.x = -Math.PI / 2;
+  field.position.set(0, 0.004, -95);
+  field.receiveShadow = true;
+  world.add(field);
+
+  // Furchen im Feld (nur optisch)
+  const furrowMat = new THREE.MeshStandardMaterial({ color: 0x5c8a4a });
+  for (let x = -36; x <= 36; x += 4) {
+    const furrowGeo = new THREE.PlaneGeometry(1, 180);
+    const furrow = new THREE.Mesh(furrowGeo, furrowMat);
+    furrow.rotation.x = -Math.PI / 2;
+    furrow.position.set(x, 0.005, -95);
+    world.add(furrow);
+  }
+
+  // Häuserzeile bei ~166m
+  function addHouseRow() {
+    const row = new THREE.Group();
+    const baseZ = -166;
+    const xs = [-20, -8, 4, 16, 28];
+
+    xs.forEach((x, i) => {
+      const house = new THREE.Group();
+
+      const bodyGeo = new THREE.BoxGeometry(10, 6, 8);
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0xd8b090 });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 3;
+      body.castShadow = true;
+      body.receiveShadow = true;
+      house.add(body);
+
+      const roofGeo = new THREE.ConeGeometry(7, 3, 4);
+      const roofMat = new THREE.MeshStandardMaterial({ color: 0x7b3a22 });
+      const roof = new THREE.Mesh(roofGeo, roofMat);
+      roof.position.y = 7;
+      roof.rotation.y = Math.PI / 4;
+      roof.castShadow = true;
+      house.add(roof);
+
+      house.position.set(x, 0, baseZ + (i % 2 === 0 ? 2 : -2));
+      row.add(house);
+    });
+
+    return row;
+  }
+
+  const houses = addHouseRow();
+  world.add(houses);
+
+  // Jura als entfernte Bergkette (simple Mesh-Wand)
+  const mountainGeo = new THREE.PlaneGeometry(600, 120, 20, 4);
+  const mountainMat = new THREE.MeshStandardMaterial({
+    color: 0x4d6484,
+    roughness: 0.9,
+    metalness: 0.0
+  });
+  const mountains = new THREE.Mesh(mountainGeo, mountainMat);
+  mountains.position.set(0, 60, -400);
+  mountains.rotation.x = -THREE.MathUtils.degToRad(10); // leicht nach hinten gekippt
+  world.add(mountains);
+
+  // etwas "Noise" in die Berge
+  mountainGeo.vertices?.forEach?.(() => {}); // für alte Three-Versionen – hier nur Platzhalter
+
+  // Bäume links und rechts
+  function addTree(x, z, scale = 1) {
+    const tree = new THREE.Group();
+
+    const trunkGeo = new THREE.CylinderGeometry(0.5 * scale, 0.6 * scale, 4 * scale, 8);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b3a1e });
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+    trunk.position.y = 2 * scale;
+    trunk.castShadow = true;
+    tree.add(trunk);
+
+    const foliageGeo = new THREE.ConeGeometry(3 * scale, 10 * scale, 10);
+    const foliageMat = new THREE.MeshStandardMaterial({ color: 0x285734 });
+    const foliage = new THREE.Mesh(foliageGeo, foliageMat);
+    foliage.position.y = 7 * scale;
+    foliage.castShadow = true;
+    foliage.receiveShadow = true;
+    tree.add(foliage);
+
+    tree.position.set(x, 0, z);
+    world.add(tree);
+  }
+
+  // links großer Nadelbaum, rechts hoher Baum – grob wie im Foto
+  addTree(-15, -6, 1.2);
+  addTree(16, -4, 1.1);
+
+  // ----------------------
+  // Fenster-Rig (linkes Drittel der Hausfront)
+  // ----------------------
+  const windowRig = new THREE.Group();
+  scene.add(windowRig);
+
+  // Hausfront: sagen wir 6m breit → Fenster im linken Drittel = -2m seitlich
+  const houseFrontWidth = 6;
+  const windowOffsetX   = -houseFrontWidth / 3; // leicht links
+  windowRig.position.set(windowOffsetX, EYE_HEIGHT_M, 6); // Haus steht bei Z=6, Blick nach Norden
+
+  // Fensterscheibe (40×80 cm → 0.4×0.8 m)
+  const winGeo = new THREE.PlaneGeometry(SCREEN_W_CM / 100, SCREEN_H_CM / 100);
+  const winMat = new THREE.MeshPhysicalMaterial({
+    color: 0x99c7ff,
+    transparent: true,
+    opacity: 0.25,
+    metalness: 0.0,
+    roughness: 0.05,
+    transmission: 0.9,
+    clearcoat: 1,
+    clearcoatRoughness: 0.2
+  });
+  const winMesh = new THREE.Mesh(winGeo, winMat);
+  winMesh.castShadow = false;
+  winMesh.receiveShadow = false;
+  windowRig.add(winMesh);
+
+  // Holzrahmen um das Fenster (braun)
+  const frameGeo = new THREE.EdgesGeometry(winGeo);
+  const frameMat = new THREE.LineBasicMaterial({ color: 0x4b2a10 });
+  const frame = new THREE.LineSegments(frameGeo, frameMat);
+  windowRig.add(frame);
+
+  // Augenpunkt 40cm hinter dem Fenster
+  const eyeDistanceM = EYE_DIST_CM / 100;
+  const eye = new THREE.Object3D();
+  eye.position.set(0, 0, -eyeDistanceM);
+  windowRig.add(eye);
+
+  function syncCameraToEye() {
+    eye.getWorldPosition(camera.position);
+    eye.getWorldQuaternion(camera.quaternion);
+  }
+  syncCameraToEye();
+
+  // CameraHelper zum Debuggen
+  const camHelper = new THREE.CameraHelper(camera);
+  camHelper.visible = false;
+  scene.add(camHelper);
+
+  // ----------------------
+  // Steuerung: Fenster bewegen / drehen
+  // ----------------------
+  const keys = {};
+  window.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code === 'KeyH') camHelper.visible = !camHelper.visible;
+  });
+  window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+  function updateWindowRig(dt) {
+    const moveSpeed = 3;   // m/s
+    const rotSpeed  = 1.0; // rad/s
+
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(windowRig.quaternion);
+    const right   = new THREE.Vector3(1, 0, 0).applyQuaternion(windowRig.quaternion);
+
+    const move = new THREE.Vector3();
+
+    if (keys['KeyW']) move.add(forward);
+    if (keys['KeyS']) move.sub(forward);
+    if (keys['KeyA']) move.sub(right);
+    if (keys['KeyD']) move.add(right);
+
+    if (move.lengthSq() > 0) {
+      move.normalize().multiplyScalar(moveSpeed * dt);
+      windowRig.position.add(move);
+    }
+
+    if (keys['KeyQ']) windowRig.rotation.y += rotSpeed * dt;
+    if (keys['KeyE']) windowRig.rotation.y -= rotSpeed * dt;
+  }
+
+  // ----------------------
+  // Loop
+  // ----------------------
+  let last = performance.now();
+  function animate() {
+    requestAnimationFrame(animate);
+    const now = performance.now();
+    const dt = (now - last) / 1000;
+    last = now;
+
+    updateWindowRig(dt);
+    syncCameraToEye();
+    camHelper.update();
+
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // Resize
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
 </script>
-
 </body>
 </html>
+
+
